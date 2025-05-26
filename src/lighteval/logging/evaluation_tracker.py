@@ -223,8 +223,8 @@ class EvaluationTracker:
 
             # We don't keep 'id' around if it's there
             column_names = dataset.column_names
-            if "id" in dataset.column_names:
-                column_names = [t for t in dataset.column_names if t != "id"]
+            # if "id" in dataset.column_names:
+            #     column_names = [t for t in dataset.column_names if t != "id"]
 
             # Sort column names to make it easier later
             dataset = dataset.select_columns(sorted(column_names))
