@@ -68,8 +68,8 @@ def cybersec_prompt_fn(line: dict, task_name: str = None, include_context: bool 
 
     query_parts = []
     if include_context and content:
-        query_parts.append(content)
-    query_parts.append(question)
+        query_parts.append("Context: " + content)
+    query_parts.append("Question: " + question)
 
     choices_str_parts = []
     for letter in ENGLISH_LETTER_INDICES:
@@ -79,8 +79,11 @@ def cybersec_prompt_fn(line: dict, task_name: str = None, include_context: bool 
             raise ValueError(f"Missing answer for choice {letter} in line: {line}")
         choices_str_parts.append(f"{letter}. {choice_text}")
 
+    instructions = "Answer with the option letter from the given choices directly."
+
     # Construct the MMLU-style query
     # Example:
+    # Instructions
     # Context (if any)
     #
     # Question text
@@ -90,7 +93,7 @@ def cybersec_prompt_fn(line: dict, task_name: str = None, include_context: bool 
     # D. Answer text for D
     #
     # Answer:
-    full_query = "\n\n".join(query_parts) + "\n" + "\n".join(choices_str_parts) + "\n\nAnswer:"
+    full_query = instructions + "\n" + "\n\n".join(query_parts) + "\n" + "\n".join(choices_str_parts) + "\n\nAnswer:"
 
     # Choices for the Doc object are the letters themselves, with a leading space.
     # This is a common format for MMLU-style evaluations where the model predicts the letter.
@@ -109,6 +112,8 @@ def cybersec_prompt_fn(line: dict, task_name: str = None, include_context: bool 
         query=full_query,
         choices=doc_choices,
         gold_index=gold_index,
+        specific={"id": line["id"]},
+        instruction=instructions,
     )
 
 
