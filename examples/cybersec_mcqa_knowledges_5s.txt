@@ -1,6 +1,6 @@
-cybersec_eval:cybersecurity_roadmap|5|0
-cybersec_eval:cybersecurity_wikipedia|5|0
-cybersec_eval:mitre_attck|5|0
-cybersec_eval:mitre_capec|5|0
-cybersec_eval:mitre_cwe|5|0
-cybersec_eval:owasp|5|0
+community|cybersec_eval:cybersecurity_roadmap|5|0
+community|cybersec_eval:cybersecurity_wikipedia|5|0
+community|cybersec_eval:mitre_attck|5|0
+community|cybersec_eval:mitre_capec|5|0
+community|cybersec_eval:mitre_cwe|5|0
+community|cybersec_eval:owasp|5|0

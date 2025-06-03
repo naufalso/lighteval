@@ -1,5 +1,5 @@
-cybersec_eval:kali_docs|5|0
-cybersec_eval:kali_tools|5|0
-cybersec_eval:tldr_en|5|0
-cybersec_eval:man_pages|5|0
-cybersec_eval:practical_pentesting_techniques|5|0
+community|cybersec_eval:kali_docs|5|0
+community|cybersec_eval:kali_tools|5|0
+community|cybersec_eval:tldr_en|5|0
+community|cybersec_eval:man_pages|5|0
+community|cybersec_eval:practical_pentesting_techniques|5|0
