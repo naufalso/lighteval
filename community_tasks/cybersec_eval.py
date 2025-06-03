@@ -45,6 +45,11 @@ CYBERSEC_SUBSETS = [
     "mitre_capec",
     "mitre_cwe",
     "owasp",
+    "kali_docs",
+    "kali_tools",
+    "tldr_en",
+    "man_pages",
+    "practical_pentesting_techniques"
 ]
 
 
@@ -83,10 +88,10 @@ def cybersec_prompt_fn(line: dict, task_name: str = None, include_context: bool 
 
     # Construct the MMLU-style query
     # Example:
-    # Instructions
-    # Context (if any)
+    # Answer with the option letter from the given choices directly.
+    # Context: (if any)
     #
-    # Question text
+    # Question: Question text
     # A. Answer text for A
     # B. Answer text for B
     # C. Answer text for C
