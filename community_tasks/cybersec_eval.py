@@ -139,7 +139,7 @@ class CustomCybersecEvalTask(LightevalTaskConfig):
             prompt_function=lambda line, task_name: cybersec_prompt_fn(line, task_name, include_context=include_context),
             # IMPORTANT: Replace with your actual Hugging Face Hub dataset repository ID
             # For example: "my_organization/my_cybersecurity_dataset"
-            hf_repo="naufalso/cybersecurity_benchmark_mcqa",
+            hf_repo="naufalso/cybersecurity_benchmark_mcqa_cleaned",
             metric=[Metrics.loglikelihood_acc_norm],  # Using standard accuracy for multiple-choice questions
             hf_avail_splits=["test"],  # As per your dataset card
             evaluation_splits=["test"],  # As per your dataset card
