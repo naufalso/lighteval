@@ -1,9 +1,9 @@
-community|cybersec_eval:cybersecurity_roadmap|5|0
-community|cybersec_eval:cybersecurity_wikipedia|5|0
-community|cybersec_eval:mitre_attck|5|0
-community|cybersec_eval:mitre_capec|5|0
-community|cybersec_eval:mitre_cwe|5|0
-community|cybersec_eval:owasp|5|0
+community|cybersec_eval:cybersecurity_roadmap|0|0
+community|cybersec_eval:cybersecurity_wikipedia|0|0
+community|cybersec_eval:mitre_attck|0|0
+community|cybersec_eval:mitre_capec|0|0
+community|cybersec_eval:mitre_cwe|0|0
+community|cybersec_eval:owasp|0|0
 community|cybersec_eval:kali_docs|0|0
 community|cybersec_eval:kali_tools|0|0
 community|cybersec_eval:tldr_en|0|0
