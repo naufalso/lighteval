@@ -22,6 +22,8 @@
 
 import logging
 import random
+import os
+
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
@@ -160,9 +162,19 @@ class PromptManager:
 
         contexts = []
         offset = 2 if system_prompt is not None else 1
+
+        # Get enable_thinking from enivronment variable with default None
+        enable_thinking_env = os.getenv("ENABLE_THINKING")
+        kwargs = {"tokenize": False, "add_generation_prompt": True, "add_special_tokens": False}
+        if enable_thinking_env is not None:
+            if enable_thinking_env.lower() == "true":
+                kwargs["enable_thinking"] = True
+            elif enable_thinking_env.lower() == "false":
+                kwargs["enable_thinking"] = False
+
         for i in range(0, len(role_content_list), offset + 1):
             c = self.model.tokenizer.apply_chat_template(
-                role_content_list[: i + offset], add_generation_prompt=True, tokenize=False, add_special_tokens=False
+                role_content_list[: i + offset], **kwargs
             )
             contexts.append(c)
 
@@ -250,9 +262,16 @@ class PromptManager:
             return output, num_effective_fewshots
 
         elif use_chat_template:
-            return self.model.tokenizer.apply_chat_template(
-                output, tokenize=False, add_generation_prompt=True
-            ), num_effective_fewshots
+            # Get enable_thinking from enivronment variable with default None
+            enable_thinking_env = os.getenv("ENABLE_THINKING")
+            kwargs = {"tokenize": False, "add_generation_prompt": True}
+            if enable_thinking_env is not None:
+                if enable_thinking_env.lower() == "true":
+                    kwargs["enable_thinking"] = True
+                elif enable_thinking_env.lower() == "false":
+                    kwargs["enable_thinking"] = False
+
+            return self.model.tokenizer.apply_chat_template(output, **kwargs), num_effective_fewshots
 
         return output, num_effective_fewshots
 
@@ -473,6 +492,12 @@ class FewShotSampler:
 
     def get_fewshot_seeds(self, few_shot_iterations: int = None) -> list[int]:
         """Return a list of seeds for sampling several times the few shots"""
+        # todo @saylortwift: check which seed for bb
+        if few_shot_iterations <= 1:
+            return [0]
+        seeds = range(few_shot_iterations)
+        logger.warning(f"Running {self.task.name} with {few_shot_iterations} few-shot iterations.")
+        return seeds
         # todo @saylortwift: check which seed for bb
         if few_shot_iterations <= 1:
             return [0]

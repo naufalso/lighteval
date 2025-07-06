@@ -49,7 +49,9 @@ CYBERSEC_SUBSETS = [
     "kali_tools",
     "tldr_en",
     "man_pages",
-    "practical_pentesting_techniques"
+    "practical_pentesting_techniques",
+    "nullbyte",
+    "hackingarticles"
 ]
 
 

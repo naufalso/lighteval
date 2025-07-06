@@ -280,7 +280,15 @@ class JudgeLM:
         return response
 
     def __call_vllm(self, prompt):
-        tokenized = [self.tokenizer.apply_chat_template(p) for p in prompt]
+        # Get enable_thinking from enivronment variable with default None
+        enable_thinking_env = os.getenv("ENABLE_THINKING")
+        kwargs = {}
+        if enable_thinking_env is not None:
+            if enable_thinking_env.lower() == "true":
+                kwargs["enable_thinking"] = True
+            elif enable_thinking_env.lower() == "false":
+                kwargs["enable_thinking"] = False
+        tokenized = [self.tokenizer.apply_chat_template(p, **kwargs) for p in prompt]
         output = self.pipe.generate(prompt_token_ids=tokenized, sampling_params=self.sampling_params, use_tqdm=True)
         outputs = [output.outputs[0].text for output in output]
         return outputs
