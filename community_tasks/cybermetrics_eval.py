@@ -6,9 +6,9 @@ from lighteval.tasks.requests import Doc
 # Define the English letter indices for choices
 ENGLISH_LETTER_INDICES = ["A", "B", "C", "D"]
 
-def ctimcq_prompt_fn(line: dict, task_name: str = None) -> Doc:
+def cybermetrics_mcq_prompt_fn(line: dict, task_name: str = None) -> Doc:
     question = line['question']
-    choices = line['answer']
+    choices = line['answers']
     solution = line['solution']
 
     options = ', '.join([f"{key}) {value}" for key, value in choices.items()])
@@ -47,7 +47,7 @@ class CustomCyberMetricEvalTask(LightevalTaskConfig):
         super().__init__(
             name=name,
             hf_subset=hf_subset,
-            prompt_function=ctimcq_prompt_fn,
+            prompt_function=cybermetrics_mcq_prompt_fn,
             # IMPORTANT: Replace with your actual Hugging Face Hub dataset repository ID
             # For example: "my_organization/my_cybersecurity_dataset"
             hf_repo="RISys-Lab/cybermetrics_mcqa",
