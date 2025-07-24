@@ -63,6 +63,7 @@ if __name__ == "__main__":
         description="Extract evaluation results from lighteval JSON output files in a folder and combine them into a CSV."
     )
     parser.add_argument("folder_path", type=str, help="Path to the folder containing JSON results files.")
+
     parser.add_argument(
         "-o",
         "--output",
@@ -71,16 +72,28 @@ if __name__ == "__main__":
         help="Path to save the combined results in a CSV file.",
     )
 
+    parser.add_argument(
+        "-f",
+        "--filter",
+        type=str,
+        help="Filter pattern to match folder names (e.g., 'qwen' for folders containing 'qwen')",
+    )
+
     args = parser.parse_args()
 
     json_files = []
     for root, _, files in os.walk(args.folder_path):
+        # Apply folder filter if specified
+        if args.filter and args.filter.lower() not in root.lower():
+            continue
+        
         for file in files:
             if file.endswith('.json'):
                 json_files.append(os.path.join(root, file))
 
     if not json_files:
-        print(f"No JSON files found in {args.folder_path}")
+        filter_msg = f" with filter pattern '{args.filter}'" if args.filter else ""
+        print(f"No JSON files found in {args.folder_path}{filter_msg}")
         exit()
 
     all_results = []

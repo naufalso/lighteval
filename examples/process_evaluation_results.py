@@ -14,22 +14,26 @@ def setup_environment(hf_home: str = None):
         os.environ["HF_HOME"] = hf_home
 
 
-def get_dataset_subsets(repo_path: str) -> List[str]:
+def get_dataset_subsets(dataset_path: str) -> List[str]:
     """Get all dataset subsets from the HuggingFace repository."""
     fs = HfFileSystem()
     return [
         data['name'].split('/')[-1] 
-        for data in fs.ls(repo_path) 
+        for data in fs.ls("datasets/" + dataset_path) 
         if data['type'] == 'directory' and data['name'] != "evaluation_results"
     ]
 
 
-def get_all_correct_ids(dataset_path: str, data_files_pattern: str) -> Tuple[any, List[str], Dict[str, float]]:
+def get_all_correct_ids(dataset_path: str, subset: str, local: bool=False) -> Tuple[any, List[str], Dict[str, float]]:
     """Get all IDs with correct answers and their ratios."""
     correct_answer_ratio = defaultdict(int)
     all_correct_ids = []
 
-    dataset = load_dataset(dataset_path, data_files=data_files_pattern + "/*.parquet", split="train")
+    if local:
+        dataset = load_dataset("parquet", data_files=f"{os.path.join(dataset_path, subset)}/*.parquet", split="train")
+    else:
+        dataset = load_dataset(dataset_path, data_files=f"{subset}/*.parquet", split="train")
+        
     dataset = dataset.flatten()
     dataset_pd = dataset.to_pandas()
     grouped = dataset_pd.groupby('specifics.id')
@@ -114,7 +118,12 @@ def main(args):
     setup_environment(args.hf_home)
 
     # Get dataset subsets
-    subsets = get_dataset_subsets(args.repo_path)
+    if not args.local:
+        print("Fetching dataset subsets from HuggingFace Hub...")
+        subsets = get_dataset_subsets(args.dataset_path)
+    else:
+        print("Running in local mode, using local repository path.")
+        subsets = [d for d in os.listdir(args.dataset_path) if os.path.isdir(os.path.join(args.dataset_path, d))]
     print(f"Found {len(subsets)} subsets: {subsets}")
 
     # Initialize result containers
@@ -128,10 +137,10 @@ def main(args):
     # Process each subset
     for subset in subsets:
         print(f"Processing subset: {subset}")
-        
+                
         # Get all correct IDs and ratios
         dataset, all_correct_ids[subset], all_correct_ratios[subset] = get_all_correct_ids(
-            args.dataset_path, subset
+            args.dataset_path, subset, args.local
         )
         
         # Calculate model scores
@@ -179,9 +188,8 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process MCQA evaluation results")
+    parser.add_argument("--local", action="store_true", help="Run in local mode (no remote operations)")
     parser.add_argument("--hf_home", type=str, help="Path to HuggingFace home directory")
-    parser.add_argument("--repo_path", type=str, default="datasets/naufalso/cybersec_mcqa_results/",
-                      help="Path to the HuggingFace repository")
     parser.add_argument("--dataset_path", type=str, default="naufalso/cybersec_mcqa_results",
                       help="Path to the dataset")
     parser.add_argument("--output_dir", type=str, default="evaluation_results",
