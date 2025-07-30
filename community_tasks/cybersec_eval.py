@@ -294,6 +294,57 @@ def secure_mcq_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
         instruction=instructions,
     )
 
+def secbench_mcq_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
+    """
+    Processes a line from the SECBENCH MCQ dataset to create a Doc object for MMLU-style evaluation.
+
+    Args:
+        line: A dictionary representing a sample from the dataset.
+              Expected keys: "question", "answers" (dict with "A", "B", "C", "D"), "solution" (str "A"-"D").
+        task_name: The name of the task.
+
+    Returns:
+        A Doc object containing the formatted query, choices (letters), and gold standard index.
+        
+    Raises:
+        ValueError: If required keys are missing or invalid solution letter is provided.
+    """
+    validate_mcq_line(line, ["question", "answers", "label"])
+    
+    question = line["question"]
+    answers_list = line["answers"]  # e.g. ["Text A", "Text B", "Text C", "Text D"]
+    solution_letter = line["label"]  # e.g. "A"
+
+    query_parts = [f"Question: {question}"]
+
+    choices_str_parts = []
+    for letter, choice_text in zip(ENGLISH_LETTER_INDICES, answers_list):
+        choices_str_parts.append(f"{letter}. {choice_text}")
+
+    instructions = "You are given multiple choice questions. Answer with the option letter from the given choices directly."
+
+    # Construct the MMLU-style query
+    full_query = instructions + "\n" + "\n".join(query_parts) + "\n" + "\n".join(choices_str_parts) + "\nAnswer:"
+
+    # Choices for the Doc object are the letters themselves, with a leading space.
+    doc_choices = [f" {letter}" for letter in ENGLISH_LETTER_INDICES]
+
+    try:
+        gold_index = ENGLISH_LETTER_INDICES.index(solution_letter)
+    except ValueError:
+        raise ValueError(
+            f"Invalid solution letter '{solution_letter}' in dataset. Expected one of {ENGLISH_LETTER_INDICES}."
+        )
+
+    return Doc(
+        task_name=task_name,
+        query=full_query,
+        choices=doc_choices,
+        gold_index=gold_index,
+        specific={"id": line.get("id")},
+        instruction=instructions,
+    )
+
 
 # ============ Task Configuration Classes ============
 
@@ -586,17 +637,17 @@ class CustomCTIBenchEvalTask(LightevalTaskConfig):
         elif hf_subset == "cti-rcm":
             prompt_fn = cti_rcm_prompt_fn
             metrics = [cti_rcm_metrics]
-            generation_size = 8192
+            generation_size = 1024
             stop_sequence = []
         elif hf_subset == "cti-vsp":
             prompt_fn = cti_vsp_prompt_fn
             metrics = [cti_vsp_metrics]
-            generation_size = 8192
+            generation_size = 1024
             stop_sequence = []
         elif hf_subset == "cti-ate":
             prompt_fn = cti_ate_prompt_fn
             metrics = [mitre_technique_metrics]  # Fixed: should be a list
-            generation_size = 8192
+            generation_size = 1024
             stop_sequence = []
         else:
             raise ValueError(f"Unknown subset '{hf_subset}' for CTI-Bench evaluation task.")
@@ -662,6 +713,32 @@ class CustomSECUREEvalTask(LightevalTaskConfig):
             stop_sequence= None if log_prob else ["\n"],
             trust_dataset=True,
         )
+
+class CustomSecBenchEvalTask(LightevalTaskConfig):
+    """Configuration for SECURE evaluation tasks."""
+
+    def __init__(self, name: str, hf_subset: str, log_prob: bool = True):
+        super().__init__(
+            name=name,
+            hf_subset=hf_subset,
+            prompt_function=secure_mcq_prompt_fn,
+            hf_repo="RISys-Lab/SecBench",
+            metrics=[Metrics.loglikelihood_acc_norm] if log_prob else [
+                Metrics.exact_match,
+                Metrics.quasi_exact_match,
+                Metrics.prefix_exact_match,
+                Metrics.prefix_quasi_exact_match,
+            ],
+            hf_avail_splits=["val", "test"],
+            evaluation_splits=["test"],
+            few_shots_split="val",
+            few_shots_select="sequential",
+            suite=["community"],
+            generation_size=-1 if log_prob else 100,
+            stop_sequence= None if log_prob else ["\n"],
+            trust_dataset=True,
+        )
+
 
 
 def cybermetrics_mcq_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
@@ -751,6 +828,12 @@ SECURE_TASKS = [
     CustomSECUREEvalTask(name="secure:cwet", hf_subset="CWET"),
     CustomSECUREEvalTask(name="secure:maet_em", hf_subset="MAET", log_prob=False),
     CustomSECUREEvalTask(name="secure:cwet_em", hf_subset="CWET", log_prob=False),
+]
+
+# SECBENCH tasks
+SECBENCH_TASKS = [
+    CustomSecBenchEvalTask(name="secbench:mcq-en", hf_subset="MCQs_English"),
+    CustomSecBenchEvalTask(name="secbench:mcq-en_em", hf_subset="MCQs_English", log_prob=False),
 ]
 
 # CTI-Bench tasks
