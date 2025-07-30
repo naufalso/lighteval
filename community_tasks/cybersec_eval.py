@@ -37,6 +37,7 @@ from aenum import extend_enum
 
 from lighteval.metrics.metrics import Metrics
 from lighteval.metrics.utils.metric_utils import SampleLevelMetric
+from lighteval.models.model_output import ModelResponse
 from lighteval.tasks.lighteval_task import LightevalTaskConfig
 from lighteval.tasks.requests import Doc, SamplingMethod
 
@@ -76,6 +77,11 @@ CTIBENCH_SUBSETS = [
     "cti-rcm",
     "cti-vsp",
     "cti-ate",
+]
+
+SECURE_SUBSETS = [
+    "CWET",
+    "MAET",
 ]
 
 # SecEval few-shot examples
@@ -213,10 +219,61 @@ def cybersec_prompt_fn(line: Dict, task_name: Optional[str] = None, include_cont
             raise ValueError(f"Missing answer for choice {letter} in line: {line}")
         choices_str_parts.append(f"{letter}. {choice_text}")
 
-    instructions = "Answer with the option letter from the given choices directly."
+    instructions = "You are given multiple choice questions. Answer with the option letter from the given choices directly."
 
     # Construct the MMLU-style query
-    full_query = instructions + "\n" + "\n\n".join(query_parts) + "\n" + "\n".join(choices_str_parts) + "\n\nAnswer:"
+    full_query = instructions + "\n" + "\n\n".join(query_parts) + "\n" + "\n".join(choices_str_parts) + "\nAnswer:"
+
+    # Choices for the Doc object are the letters themselves, with a leading space.
+    doc_choices = [f" {letter}" for letter in ENGLISH_LETTER_INDICES]
+
+    try:
+        gold_index = ENGLISH_LETTER_INDICES.index(solution_letter)
+    except ValueError:
+        raise ValueError(
+            f"Invalid solution letter '{solution_letter}' in dataset. Expected one of {ENGLISH_LETTER_INDICES}."
+        )
+
+    return Doc(
+        task_name=task_name,
+        query=full_query,
+        choices=doc_choices,
+        gold_index=gold_index,
+        specific={"id": line.get("id")},
+        instruction=instructions,
+    )
+
+def secure_mcq_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
+    """
+    Processes a line from the Secure MCQ dataset to create a Doc object for MMLU-style evaluation.
+
+    Args:
+        line: A dictionary representing a sample from the dataset.
+              Expected keys: "question", "answers" (dict with "A", "B", "C", "D"), "solution" (str "A"-"D").
+        task_name: The name of the task.
+
+    Returns:
+        A Doc object containing the formatted query, choices (letters), and gold standard index.
+        
+    Raises:
+        ValueError: If required keys are missing or invalid solution letter is provided.
+    """
+    validate_mcq_line(line, ["question", "options", "answer"])
+    
+    question = line["question"]
+    answers_list = line["options"]  # e.g. ["Text A", "Text B", "Text C", "Text D"]
+    solution_letter = line["answer"]  # e.g. "A"
+
+    query_parts = [f"Question: {question}"]
+
+    choices_str_parts = []
+    for letter, choice_text in zip(ENGLISH_LETTER_INDICES, answers_list):
+        choices_str_parts.append(f"{letter}. {choice_text}")
+
+    instructions = "You are given multiple choice questions. Answer with the option letter from the given choices directly."
+
+    # Construct the MMLU-style query
+    full_query = instructions + "\n" + "\n".join(query_parts) + "\n" + "\n".join(choices_str_parts) + "\nAnswer:"
 
     # Choices for the Doc object are the letters themselves, with a leading space.
     doc_choices = [f" {letter}" for letter in ENGLISH_LETTER_INDICES]
@@ -299,7 +356,7 @@ def ctimcq_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
     
     prompt = line['Prompt'].replace(
         "The last line of your answer should contain only the single letter corresponding to the best option, with no additional text.",
-        "Please provide the letter corresponding to the best option (A, B, C, D), with no additional text."
+        "Please provide the letter corresponding to the best option (A, B, C, D), with no additional text. **Answer:**"
     )
     solution_letter = line['GT']
 
@@ -376,68 +433,72 @@ def cti_ate_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
 
 # ============ Metric Functions ============
 
-def compute_cti_rcm_accuracy(predictions: List[str], formatted_doc: Doc, **kwargs) -> float:
+def compute_cti_rcm_accuracy(model_response: ModelResponse, doc: Doc, **kwargs) -> float:
     """
     Computes the accuracy for the CTI-RCM task based on the predictions and the ground truth.
 
     Args:
-        predictions: List of predicted answers.
-        formatted_doc: The formatted document containing the ground truth.
+        model_response: ModelResponse object containing the model's generated text.
+        doc: The formatted document containing the ground truth.
 
     Returns:
         Accuracy score (0.0 or 1.0).
     """
-    if not predictions:
+    # Extract text from ModelResponse object
+    if not model_response.text:
         return 0.0
-        
-    gold_answer = formatted_doc.choices[formatted_doc.gold_index]
-    model_answer = predictions[0].strip()
+    
+    model_answer = model_response.text[0].strip()
+    gold_answer = doc.choices[doc.gold_index]
 
     # Check if the model's answer matches the ground truth
     return float(_extract_rcm(model_answer)[0] == gold_answer)
 
 
-def compute_cti_vsp_accuracy(predictions: List[str], formatted_doc: Doc, **kwargs) -> float:
+def compute_cti_vsp_accuracy(model_response: ModelResponse, doc: Doc, **kwargs) -> float:
     """
     Computes the accuracy for the CTI-VSP task based on the predictions and the ground truth.
 
     Args:
-        predictions: List of predicted answers.
-        formatted_doc: The formatted document containing the ground truth.
+        model_response: ModelResponse object containing the model's generated text.
+        doc: The formatted document containing the ground truth.
 
     Returns:
         Accuracy score (0.0 or 1.0).
     """
-    if not predictions:
+    # Extract text from ModelResponse object
+    if not model_response.text:
         return 0.0
-        
-    gold_answer = formatted_doc.choices[formatted_doc.gold_index]
-    model_answer = predictions[0].strip()
+    
+    model_answer = model_response.text[0].strip()
+    gold_answer = doc.choices[doc.gold_index]
 
     # Check if the model's answer matches the ground truth
     return float(_extract_vsp(model_answer)[0] == gold_answer)
 
 
-def compute_mitre_technique_accuracy(predictions: List[str], formatted_doc: Doc, **kwargs) -> float:
+def compute_mitre_technique_accuracy(model_response: ModelResponse, doc: Doc, **kwargs) -> float:
     """
     Computes normalized accuracy for MITRE technique extraction task.
     
     Args:
-        predictions: List of predicted answers
-        formatted_doc: The formatted document containing the ground truth
+        model_response: ModelResponse object containing the model's generated text.
+        doc: The formatted document containing the ground truth
         
     Returns:
         Normalized accuracy score (0.0 to 1.0)
     """
-    if not predictions:
+    # Extract text from ModelResponse object
+    if not model_response.text:
         return 0.0
     
+    model_answer = model_response.text[0].strip()
+    
     # Get ground truth techniques
-    gold_answer = formatted_doc.choices[formatted_doc.gold_index]
+    gold_answer = doc.choices[doc.gold_index]
     gold_techniques = _parse_technique_list(gold_answer)
     
     # Extract techniques from model prediction
-    model_answer = predictions[0].strip()
     predicted_techniques, _ = _extract_mitre_techniques(model_answer)
     
     # Convert to sets for comparison
@@ -577,6 +638,31 @@ class CustomCyberMetricEvalTask(LightevalTaskConfig):
             trust_dataset=True,
         )
 
+class CustomSECUREEvalTask(LightevalTaskConfig):
+    """Configuration for SECURE evaluation tasks."""
+
+    def __init__(self, name: str, hf_subset: str, log_prob: bool = True):
+        super().__init__(
+            name=name,
+            hf_subset=hf_subset,
+            prompt_function=secure_mcq_prompt_fn,
+            hf_repo="RISys-Lab/SECURE_Benchmark",
+            metrics=[Metrics.loglikelihood_acc_norm] if log_prob else [
+                Metrics.exact_match,
+                Metrics.quasi_exact_match,
+                Metrics.prefix_exact_match,
+                Metrics.prefix_quasi_exact_match,
+            ],
+            hf_avail_splits=["val", "test"],
+            evaluation_splits=["test"],
+            few_shots_split="val",
+            few_shots_select="sequential",
+            suite=["community"],
+            generation_size=-1 if log_prob else 100,
+            stop_sequence= None if log_prob else ["\n"],
+            trust_dataset=True,
+        )
+
 
 def cybermetrics_mcq_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
     """Create prompt for CyberMetrics MCQ task."""
@@ -615,28 +701,30 @@ class SecEvalMCQATask(LightevalTaskConfig):
             hf_subset="default",
             prompt_function=seceval_prompt_fn,
             hf_repo="RISys-Lab/seceval",
-            metrics=[Metrics.loglikelihood_acc_norm],  # Fixed: was 'metric'
+            metrics=[Metrics.exact_match, Metrics.quasi_exact_match, Metrics.prefix_exact_match],  # Fixed: was 'metric'
             hf_avail_splits=["train"],
             evaluation_splits=["train"],
             few_shots_split=None,
             few_shots_select=None,
             suite=["community"],
-            generation_size=-1,
-            stop_sequence=None,
+            generation_size=2048,
+            stop_sequence=["\n"],
             trust_dataset=True,
         )
 
 
 def seceval_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Optional[Doc]:
     """Create prompt for SecEval MCQA task."""
-    validate_mcq_line(line, ["question", "answer"])
+    validate_mcq_line(line, ["question", "answer", "choices"])
     
     question = line["question"]
+    choices = line["choices"]  # e.g. ["A. ", "B. ", "C. ", "D. "]
     gold_letter = line["answer"].strip().upper()
+
 
     instruction = "Below are multiple-choice questions concerning cybersecurity. Please select the correct answers and respond with the letters ABCD (A, B, C, D, AB, AC, AD, BC, BD, CD, ABC, ABD, ACD, BCD, ABCD) only."
     
-    prompt = f"{instruction}\n\n{SECEVAL_FEW_SHOT_EXAMPLES}\n\nQuestion: {question}\nAnswer:"
+    prompt = f"{instruction}\n\n{SECEVAL_FEW_SHOT_EXAMPLES}\nQuestion: {question}{ " ".join(choices)}\nAnswer:"
 
     doc_choices = [f" {letter}" for letter in SECEVAL_ENGLISH_LETTER_INDICES]
 
@@ -656,6 +744,14 @@ def seceval_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Optional[D
 
 
 # ============ Task Instances ============
+
+# SECURE tasks
+SECURE_TASKS = [
+    CustomSECUREEvalTask(name="secure:maet", hf_subset="MAET"),
+    CustomSECUREEvalTask(name="secure:cwet", hf_subset="CWET"),
+    CustomSECUREEvalTask(name="secure:maet_em", hf_subset="MAET", log_prob=False),
+    CustomSECUREEvalTask(name="secure:cwet_em", hf_subset="CWET", log_prob=False),
+]
 
 # CTI-Bench tasks
 CTIBENCH_TASKS = [
@@ -677,4 +773,4 @@ CYBERMETRICS_TASKS = [
 SECEVAL_TABLE = [SecEvalMCQATask()]
 
 # The table of tasks to be imported by lighteval
-TASKS_TABLE = CYBERSEC_TASKS + CTIBENCH_TASKS + CYBERMETRICS_TASKS + SECEVAL_TABLE
+TASKS_TABLE = CYBERSEC_TASKS + CTIBENCH_TASKS + CYBERMETRICS_TASKS + SECEVAL_TABLE + SECURE_TASKS
