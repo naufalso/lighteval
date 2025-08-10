@@ -40,14 +40,18 @@ from lighteval.metrics.utils.metric_utils import SampleLevelMetric
 from lighteval.models.model_output import ModelResponse
 from lighteval.tasks.lighteval_task import LightevalTaskConfig
 from lighteval.tasks.requests import Doc, SamplingMethod
+from functools import partial
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging (avoid overriding global config if handlers already set)
+if not logging.getLogger(__name__).handlers:
+    logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 # Constants
 ENGLISH_LETTER_INDICES = ["A", "B", "C", "D"]
+SECURE_LETTER_INDICES = ["A", "B", "C", "D"]
+SECURE_BOOL_INDICES = ["T", "F", "X"]
 
 # SecEval supports multi-answer choices
 SECEVAL_ENGLISH_LETTER_INDICES = [
@@ -118,8 +122,8 @@ def _extract_rcm(text: str) -> Tuple[str, bool]:
 
 
 def _extract_vsp(text: str) -> Tuple[str, bool]:
-    """Extract CVSS v3.1 vector string from text."""
-    cvss_pattern = r'AV:[A-Za-z]+/AC:[A-Za-z]+/PR:[A-Za-z]+/UI:[A-Za-z]+/S:[A-Za-z]+/C:[A-Za-z]+/I:[A-Za-z]+/A:[A-Za-z]+'
+    """Extract CVSS v3.x vector string from text (accepts optional prefix)."""
+    cvss_pattern = r'(?:CVSS:3\.[01]/)?AV:[A-Za-z]+/AC:[A-Za-z]+/PR:[A-Za-z]+/UI:[A-Za-z]+/S:[A-Za-z]+/C:[A-Za-z]+/I:[A-Za-z]+/A:[A-Za-z]+'
     matches = re.findall(cvss_pattern, text)
     if matches:
         return matches[-1], True
@@ -294,6 +298,37 @@ def secure_mcq_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
         instruction=instructions,
     )
 
+def secure_bool_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
+    """
+    Processes a line from the SECURE boolean dataset (True/False/Unknown style) to create a Doc object.
+    Expected keys: 'prompt', 'question', 'answer' where answer ∈ {T,F,X}.
+    """
+    validate_mcq_line(line, ["prompt", "question", "answer"])
+    
+    prompt = line["prompt"]
+    question = line["question"]
+    solution_letter = line["answer"]  # e.g. "T", "F", "X"
+
+    full_query = f"{prompt}\nAnswer:"
+
+    # Choices for the Doc object are the letters themselves, with a leading space.
+    doc_choices = [f" {letter}" for letter in SECURE_BOOL_INDICES]
+
+    try:
+        gold_index = SECURE_BOOL_INDICES.index(solution_letter)
+    except ValueError:
+        raise ValueError(
+            f"Invalid solution letter '{solution_letter}' in dataset. Expected one of {SECURE_BOOL_INDICES}."
+        )
+
+    return Doc(
+        task_name=task_name,
+        query=full_query,
+        choices=doc_choices,
+        gold_index=gold_index,
+        specific={"question": question, "url": line.get("url", "")},
+    )
+
 def secbench_mcq_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
     """
     Processes a line from the SECBENCH MCQ dataset to create a Doc object for MMLU-style evaluation.
@@ -401,14 +436,19 @@ for subset in CYBERSEC_SUBSETS:
 
 # ============ CTI-Bench Evaluation Tasks ============
 
-def ctimcq_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
+def ctimcq_prompt_fn(line: Dict, task_name: Optional[str] = None, is_direct_answer: bool = True) -> Doc:
     """Create prompt for CTI-MCQ task."""
     validate_mcq_line(line, ["Prompt", "GT"])
     
-    prompt = line['Prompt'].replace(
-        "The last line of your answer should contain only the single letter corresponding to the best option, with no additional text.",
-        "Please provide the letter corresponding to the best option (A, B, C, D), with no additional text. **Answer:**"
-    )
+    instruction = "You are given a multiple-choice question (MCQ) from a Cyber Threat Intelligence (CTI) knowledge benchmark dataset. Your task is to choose the best option among the four provided. Return your answer as a single uppercase letter: A, B, C, or D."
+    prompt = line['Prompt']
+
+    if is_direct_answer:
+        prompt = prompt.replace(
+            "The last line of your answer should contain only the single letter corresponding to the best option, with no additional text.",
+            "Please provide the letter corresponding to the best option (A, B, C, D), with no additional text. **Answer:**"
+        )
+        
     solution_letter = line['GT']
 
     doc_choices = [f" {letter}" for letter in ENGLISH_LETTER_INDICES]
@@ -426,14 +466,21 @@ def ctimcq_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
         choices=doc_choices,
         gold_index=gold_index,
         specific={"url": line.get("URL"), "Question": line.get("Question")},
+        instruction=instruction,
     )
 
 
-def cti_rcm_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
+def cti_rcm_prompt_fn(line: Dict, task_name: Optional[str] = None, is_direct_answer: bool = True) -> Doc:
     """Create prompt for CTI-RCM task."""
-    validate_mcq_line(line, ["Prompt", "GT"])
+    validate_mcq_line(line, ["Description", "Prompt", "GT"])
     
+    instruction = "Analyze the following CVE description and map it to the appropriate CWE."
     prompt = line['Prompt']
+
+    if is_direct_answer:
+        cve_description = line["Description"]
+        prompt = f"{instruction}\n\nCVE Description: {cve_description} The CWE is"
+
     solution = line['GT']
 
     return Doc(
@@ -441,16 +488,23 @@ def cti_rcm_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
         query=prompt,
         choices=[solution],
         gold_index=0,
+        instruction=instruction,
         specific={"url": line.get("URL"), "Description": line.get("Description"), "GT": solution},
     )
 
 
-def cti_vsp_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
+def cti_vsp_prompt_fn(line: Dict, task_name: Optional[str] = None, is_direct_answer: bool = True) -> Doc:
     """Create prompt for CTI-VSP task."""
-    validate_mcq_line(line, ["Prompt", "GT"])
-    
+    validate_mcq_line(line, ["Description", "Prompt", "GT"])
+
+    instruction = "Analyze the following CVE description and calculate the CVSS v3.1 Base Score. Determine the values for each base metric: AV, AC, PR, UI, S, C, I, and A. Summarize each metric's value and provide the final CVSS v3.1 vector string. Valid options for each metric are as follows: - **Attack Vector (AV)**: Network (N), Adjacent (A), Local (L), Physical (P) - **Attack Complexity (AC)**: Low (L), High (H) - **Privileges Required (PR)**: None (N), Low (L), High (H) - **User Interaction (UI)**: None (N), Required (R) - **Scope (S)**: Unchanged (U), Changed (C) - **Confidentiality (C)**: None (N), Low (L), High (H) - **Integrity (I)**: None (N), Low (L), High (H) - **Availability (A)**: None (N), Low (L), High (H) Summarize each metric's value and provide the final CVSS v3.1 vector string. Ensure the final line of your response contains only the CVSS v3 Vector String in the following format: Example format: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+
     prompt = line['Prompt']
     solution = line['GT']
+
+    if is_direct_answer:
+        cve_description = line["Description"]
+        prompt = f"{instruction}\n\nCVE Description: {cve_description} The CVSS v3.1 vector string is"    
 
     return Doc(
         task_name=task_name,
@@ -458,15 +512,20 @@ def cti_vsp_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
         choices=[solution],
         gold_index=0,
         specific={"url": line.get("URL"), "Description": line.get("Description"), "GT": solution},
+        instruction=instruction,
     )
 
 
-def cti_ate_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
+def cti_ate_prompt_fn(line: Dict, task_name: Optional[str] = None, is_direct_answer: bool = True) -> Doc:
     """Create prompt for CTI-ATE task."""
     validate_mcq_line(line, ["Prompt", "GT"])
     
+    instruction = "Extract all MITRE Enterprise attack patterns from the following text and map them to their corresponding MITRE technique IDs. Provide reasoning for each identification. Ensure the final line contains only the IDs for the main techniques, separated by commas, excluding any subtechnique IDs. MITRE Enterprise IDs are given below as reference."
     prompt = line['Prompt']
     solution = line['GT']
+
+    if is_direct_answer:
+        prompt = f"{prompt}\n**Extracted Mitre IDs**:"
 
     return Doc(
         task_name=task_name,
@@ -479,10 +538,61 @@ def cti_ate_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
             "Description": line.get("Description"), 
             "GT": solution
         },
+        instruction=instruction,
     )
 
 
 # ============ Metric Functions ============
+
+def compute_cti_mcq_last_line_accuracy(model_response: ModelResponse, doc: Doc, **kwargs) -> float:
+    """
+    Computes accuracy for CTI-MCQ task by extracting a single letter A-D from the model response.
+    Extraction strategy:
+      1. Take last non-empty line, look for standalone or leading letter.
+      2. Fallback: scan previous lines.
+      3. Final fallback: if exactly one unique A-D appears in whole text, use it; else fail.
+    """
+    if not model_response.text:
+        return 0.0
+    text = model_response.text[0]
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    pattern_standalone = re.compile(r'\b([ABCD])\b')
+    pattern_leading = re.compile(r'^([ABCD])[).:]')
+
+    def find_in_line(line: str) -> Optional[str]:
+        cleaned = line.replace('**', ' ')
+        m = pattern_leading.match(cleaned)
+        if m:
+            return m.group(1)
+        m = pattern_standalone.search(cleaned)
+        if m:
+            return m.group(1)
+        # Trailing markdown emphasis like **A**
+        m = re.search(r'\*\*([ABCD])\*\*$', cleaned)
+        if m:
+            return m.group(1)
+        # Ending with letter
+        if cleaned and cleaned[-1] in 'ABCD' and cleaned[-2:-1].isalnum() is False:
+            return cleaned[-1]
+        return None
+
+    answer = None
+    if lines:
+        # prioritize last line then walk backwards a few lines
+        for line in lines[::-1][:5]:
+            answer = find_in_line(line)
+            if answer:
+                break
+    if not answer:
+        letters = re.findall(r'[ABCD]', text)
+        unique = set(letters)
+        if len(unique) == 1:
+            answer = letters[0]
+    if not answer:
+        return 0.0
+
+    gold_answer = doc.choices[doc.gold_index].strip().upper()
+    return float(answer.upper() == gold_answer)
 
 def compute_cti_rcm_accuracy(model_response: ModelResponse, doc: Doc, **kwargs) -> float:
     """
@@ -506,38 +616,60 @@ def compute_cti_rcm_accuracy(model_response: ModelResponse, doc: Doc, **kwargs) 
     return float(_extract_rcm(model_answer)[0] == gold_answer)
 
 
-def compute_cti_vsp_accuracy(model_response: ModelResponse, doc: Doc, **kwargs) -> float:
-    """
-    Computes the accuracy for the CTI-VSP task based on the predictions and the ground truth.
-
-    Args:
-        model_response: ModelResponse object containing the model's generated text.
-        doc: The formatted document containing the ground truth.
-
-    Returns:
-        Accuracy score (0.0 or 1.0).
-    """
-    # Extract text from ModelResponse object
-    if not model_response.text:
-        return 0.0
+def compute_cti_vsp_mad_norm(model_response: ModelResponse, doc: Doc, **kwargs) -> float:
+    """Compute normalized similarity for CVSS vectors (prefers v3.1, supports 3.0)."""
+    # Get the raw MAD score
+    mad_score = compute_cti_vsp_mad(model_response, doc, **kwargs)
     
+    # Convert MAD to normalized similarity: 1 - (MAD / 10.0)
+    # MAD ranges from 0 (perfect) to 10 (worst), so normalized similarity ranges from 1 (perfect) to 0 (worst)
+    similarity = 1 - (mad_score / 10.0)
+    return max(0.0, min(1.0, similarity))
+
+
+def compute_cti_vsp_mad(model_response: ModelResponse, doc: Doc, **kwargs) -> float:
+    """Compute raw MAD (Mean Absolute Difference) for CVSS vectors (prefers v3.1, supports 3.0)."""
+    if not model_response.text:
+        return 10.0  # Maximum possible difference for non-response
     model_answer = model_response.text[0].strip()
     gold_answer = doc.choices[doc.gold_index]
-
-    # Check if the model's answer matches the ground truth
-    return float(_extract_vsp(model_answer)[0] == gold_answer)
+    pred_vector, pred_success = _extract_vsp(model_answer)
+    if not pred_success:
+        return 10.0  # Maximum possible difference for invalid vector
+    try:
+        try:
+            from cvss import CVSS3  # type: ignore
+        except ImportError:
+            logger.warning("CVSS library not available. Install with: pip install cvss")
+            return 0.0 if pred_vector == gold_answer else 10.0
+        # Normalize prefixes: default to 3.1 if none.
+        def norm(v: str) -> str:
+            if v.startswith('CVSS:3.0/') or v.startswith('CVSS:3.1/'):
+                return v
+            return 'CVSS:3.1/' + v
+        pred_vector_full = norm(pred_vector)
+        gold_vector_full = norm(gold_answer)
+        pred_cvss = CVSS3(pred_vector_full)
+        gold_cvss = CVSS3(gold_vector_full)
+        pred_score = pred_cvss.scores()[0]
+        gold_score = gold_cvss.scores()[0]
+        mad = abs(pred_score - gold_score)
+        return mad
+    except Exception as e:
+        logger.warning(f"Error calculating CVSS scores: {e}")
+        return 0.0 if pred_vector == gold_answer else 10.0
 
 
 def compute_mitre_technique_accuracy(model_response: ModelResponse, doc: Doc, **kwargs) -> float:
     """
-    Computes normalized accuracy for MITRE technique extraction task.
+    Computes Micro-F1 score for MITRE technique extraction task.
     
     Args:
         model_response: ModelResponse object containing the model's generated text.
         doc: The formatted document containing the ground truth
         
     Returns:
-        Normalized accuracy score (0.0 to 1.0)
+        Micro-F1 score (0.0 to 1.0)
     """
     # Extract text from ModelResponse object
     if not model_response.text:
@@ -556,42 +688,70 @@ def compute_mitre_technique_accuracy(model_response: ModelResponse, doc: Doc, **
     gold_set = set(gold_techniques)
     pred_set = set(predicted_techniques)
     
-    # Compute normalized accuracy
+    # Compute Micro-F1
     if len(gold_set) == 0 and len(pred_set) == 0:
         return 1.0  # Both empty, perfect match
     
     if len(gold_set) == 0:
         return 0.0  # Gold is empty but prediction is not
     
-    # Calculate intersection over union (Jaccard similarity)
-    intersection = len(gold_set.intersection(pred_set))
-    union = len(gold_set.union(pred_set))
+    if len(pred_set) == 0:
+        return 0.0  # Prediction is empty but gold is not
     
-    if union == 0:
+    # Calculate True Positives, False Positives, and False Negatives
+    true_positives = len(gold_set.intersection(pred_set))
+    false_positives = len(pred_set - gold_set)
+    false_negatives = len(gold_set - pred_set)
+    
+    # Micro-F1 calculation
+    if true_positives == 0:
         return 0.0
     
-    return intersection / union
+    precision = true_positives / (true_positives + false_positives)
+    recall = true_positives / (true_positives + false_negatives)
+    
+    if precision + recall == 0:
+        return 0.0
+    
+    micro_f1 = 2 * (precision * recall) / (precision + recall)
+    return micro_f1
 
 
 # Create custom metrics
+cti_mcq_metrics = SampleLevelMetric(
+    metric_name="acc",
+    higher_is_better=True,
+    category=SamplingMethod.GENERATIVE,
+    sample_level_fn=compute_cti_mcq_last_line_accuracy,
+    corpus_level_fn=np.mean,
+)
+
 cti_rcm_metrics = SampleLevelMetric(
-    metric_name="accuracy",
+    metric_name="acc",
     higher_is_better=True,
     category=SamplingMethod.GENERATIVE,
     sample_level_fn=compute_cti_rcm_accuracy,
     corpus_level_fn=np.mean,
 )
 
-cti_vsp_metrics = SampleLevelMetric(
-    metric_name="accuracy",
-    higher_is_better=True,
+cti_vsp_norm_metrics = SampleLevelMetric(
+    metric_name="mad_norm",
+    higher_is_better=True,  # Normalized similarity: 1 (best) to 0 (worst)
     category=SamplingMethod.GENERATIVE,
-    sample_level_fn=compute_cti_vsp_accuracy,
+    sample_level_fn=compute_cti_vsp_mad_norm,
+    corpus_level_fn=np.mean,
+)
+
+cti_vsp_mad_metrics = SampleLevelMetric(
+    metric_name="mad",
+    higher_is_better=False,  # Raw MAD: 0 (best) to 10 (worst)
+    category=SamplingMethod.GENERATIVE,
+    sample_level_fn=compute_cti_vsp_mad,
     corpus_level_fn=np.mean,
 )
 
 mitre_technique_metrics = SampleLevelMetric(
-    metric_name="mitre_technique_accuracy",
+    metric_name="micro_f1",
     higher_is_better=True,
     category=SamplingMethod.GENERATIVE,
     sample_level_fn=compute_mitre_technique_accuracy,
@@ -599,9 +759,11 @@ mitre_technique_metrics = SampleLevelMetric(
 )
 
 # Extend the Metrics enum with custom metrics
-extend_enum(Metrics, "cti_rcm_accuracy", cti_rcm_metrics)
-extend_enum(Metrics, "cti_vsp_accuracy", cti_vsp_metrics)
-extend_enum(Metrics, "mitre_technique_accuracy", mitre_technique_metrics)
+extend_enum(Metrics, "cti_mcq_acc", cti_mcq_metrics)
+extend_enum(Metrics, "cti_rcm_acc", cti_rcm_metrics)
+extend_enum(Metrics, "cti_vsp_mad_norm", cti_vsp_norm_metrics)
+extend_enum(Metrics, "cti_vsp_mad", cti_vsp_mad_metrics)
+extend_enum(Metrics, "mitre_technique_micro_f1", mitre_technique_metrics)
 
 
 # ============ Task Configuration Classes ============
@@ -629,29 +791,63 @@ class CustomCTIBenchEvalTask(LightevalTaskConfig):
     """Configuration for CTI-Bench evaluation tasks."""
 
     def __init__(self, name: str, hf_subset: str):
-        if hf_subset == "cti-mcq":
+        if name == "cti_bench:cti-mcq_ori":
+            prompt_fn = partial(ctimcq_prompt_fn, is_direct_answer=False)
+            metrics = [cti_mcq_metrics]
+            generation_size = 2048
+            stop_sequence = []
+        elif name == "cti_bench:cti-mcq":
+            prompt_fn = ctimcq_prompt_fn
+            metrics = [cti_mcq_metrics]
+            generation_size = 100
+            stop_sequence = ["\n"]
+        elif name == "cti_bench:cti-mcq_logprob":
             prompt_fn = ctimcq_prompt_fn
             metrics = [Metrics.loglikelihood_acc_norm]
             generation_size = -1
             stop_sequence = None
-        elif hf_subset == "cti-rcm":
+        elif name == "cti_bench:cti-rcm_ori":
+            prompt_fn = partial(cti_rcm_prompt_fn, is_direct_answer=False)
+            metrics = [cti_rcm_metrics]
+            generation_size = 2048
+            stop_sequence = []
+        elif name == "cti_bench:cti-rcm":
             prompt_fn = cti_rcm_prompt_fn
             metrics = [cti_rcm_metrics]
-            generation_size = 1024
+            generation_size = 100
+            stop_sequence = ["\n"]
+        elif name == "cti_bench:cti-vsp_ori":
+            try:
+                from cvss import CVSS3  # noqa: F401
+            except ImportError:
+                logger.error("CVSS library not available. Install with: pip install cvss")
+                raise ImportError("CVSS library is required for CTI-VSP evaluation.")
+            prompt_fn = partial(cti_vsp_prompt_fn, is_direct_answer=False)
+            metrics = [cti_vsp_norm_metrics, cti_vsp_mad_metrics]
+            generation_size = 2048
             stop_sequence = []
-        elif hf_subset == "cti-vsp":
+        elif name == "cti_bench:cti-vsp":
+            try:
+                from cvss import CVSS3  # noqa: F401
+            except ImportError:
+                logger.error("CVSS library not available. Install with: pip install cvss")
+                raise ImportError("CVSS library is required for CTI-VSP evaluation.")
             prompt_fn = cti_vsp_prompt_fn
-            metrics = [cti_vsp_metrics]
-            generation_size = 1024
+            metrics = [cti_vsp_norm_metrics, cti_vsp_mad_metrics]
+            generation_size = 100
+            stop_sequence = ["\n"]
+        elif name == "cti_bench:cti-ate_ori":
+            prompt_fn = partial(cti_ate_prompt_fn, is_direct_answer=False)
+            metrics = [mitre_technique_metrics]
+            generation_size = 2048
             stop_sequence = []
-        elif hf_subset == "cti-ate":
+        elif name == "cti_bench:cti-ate":
             prompt_fn = cti_ate_prompt_fn
-            metrics = [mitre_technique_metrics]  # Fixed: should be a list
-            generation_size = 1024
-            stop_sequence = []
+            metrics = [mitre_technique_metrics]
+            generation_size = 200
+            stop_sequence = ["\n"]
         else:
-            raise ValueError(f"Unknown subset '{hf_subset}' for CTI-Bench evaluation task.")
-
+            raise ValueError(f"Unknown task name '{name}' for CTI-Bench evaluation task.")
         super().__init__(
             name=name,
             hf_subset=hf_subset,
@@ -672,20 +868,32 @@ class CustomCTIBenchEvalTask(LightevalTaskConfig):
 class CustomCyberMetricEvalTask(LightevalTaskConfig):
     """Configuration for CyberMetrics evaluation tasks."""
 
-    def __init__(self, name: str, hf_subset: str):
+    def __init__(self, name: str, hf_subset: str, log_prob: bool = True):
+        if log_prob:
+            metrics = [Metrics.loglikelihood_acc_norm]
+            generation_size = -1
+            stop_sequence = None
+        else:
+            metrics = [
+                Metrics.exact_match,
+                Metrics.quasi_exact_match,
+            ]
+            generation_size = 100
+            stop_sequence = ["\n"]
+
         super().__init__(
             name=name,
             hf_subset=hf_subset,
             prompt_function=cybermetrics_mcq_prompt_fn,
             hf_repo="RISys-Lab/cybermetrics_mcqa",
-            metrics=[Metrics.loglikelihood_acc_norm],
+            metrics=metrics,
             hf_avail_splits=["train"],
             evaluation_splits=["train"],
             few_shots_split=None,
             few_shots_select=None,
             suite=["community"],
-            generation_size=-1,
-            stop_sequence=None,
+            generation_size=generation_size,
+            stop_sequence=stop_sequence,
             trust_dataset=True,
         )
 
@@ -693,16 +901,22 @@ class CustomSECUREEvalTask(LightevalTaskConfig):
     """Configuration for SECURE evaluation tasks."""
 
     def __init__(self, name: str, hf_subset: str, log_prob: bool = True):
+
+        if hf_subset in ["MAET", "CWET"]:
+            prompt_fn = secure_mcq_prompt_fn
+        elif hf_subset in ["KCV", "VOOD"]:
+            prompt_fn = secure_bool_prompt_fn
+        else:
+            raise ValueError(f"Unknown subset '{hf_subset}' for SECURE evaluation task.")
+
         super().__init__(
             name=name,
             hf_subset=hf_subset,
-            prompt_function=secure_mcq_prompt_fn,
+            prompt_function=prompt_fn,
             hf_repo="RISys-Lab/SECURE_Benchmark",
             metrics=[Metrics.loglikelihood_acc_norm] if log_prob else [
                 Metrics.exact_match,
                 Metrics.quasi_exact_match,
-                Metrics.prefix_exact_match,
-                Metrics.prefix_quasi_exact_match,
             ],
             hf_avail_splits=["val", "test"],
             evaluation_splits=["test"],
@@ -721,13 +935,11 @@ class CustomSecBenchEvalTask(LightevalTaskConfig):
         super().__init__(
             name=name,
             hf_subset=hf_subset,
-            prompt_function=secure_mcq_prompt_fn,
+            prompt_function=secbench_mcq_prompt_fn,
             hf_repo="RISys-Lab/SecBench",
             metrics=[Metrics.loglikelihood_acc_norm] if log_prob else [
                 Metrics.exact_match,
                 Metrics.quasi_exact_match,
-                Metrics.prefix_exact_match,
-                Metrics.prefix_quasi_exact_match,
             ],
             hf_avail_splits=["val", "test"],
             evaluation_splits=["test"],
@@ -738,7 +950,6 @@ class CustomSecBenchEvalTask(LightevalTaskConfig):
             stop_sequence= None if log_prob else ["\n"],
             trust_dataset=True,
         )
-
 
 
 def cybermetrics_mcq_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
@@ -778,7 +989,7 @@ class SecEvalMCQATask(LightevalTaskConfig):
             hf_subset="default",
             prompt_function=seceval_prompt_fn,
             hf_repo="RISys-Lab/seceval",
-            metrics=[Metrics.exact_match, Metrics.quasi_exact_match, Metrics.prefix_exact_match],  # Fixed: was 'metric'
+            metrics=[Metrics.exact_match,Metrics.quasi_exact_match],  # Fixed: was 'metric'
             hf_avail_splits=["train"],
             evaluation_splits=["train"],
             few_shots_split=None,
@@ -791,26 +1002,22 @@ class SecEvalMCQATask(LightevalTaskConfig):
 
 
 def seceval_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Optional[Doc]:
-    """Create prompt for SecEval MCQA task."""
+    """Create prompt for SecEval MCQA task (multi-answer)."""
     validate_mcq_line(line, ["question", "answer", "choices"])
-    
     question = line["question"]
-    choices = line["choices"]  # e.g. ["A. ", "B. ", "C. ", "D. "]
+    choices = line["choices"]
     gold_letter = line["answer"].strip().upper()
-
-
-    instruction = "Below are multiple-choice questions concerning cybersecurity. Please select the correct answers and respond with the letters ABCD (A, B, C, D, AB, AC, AD, BC, BD, CD, ABC, ABD, ACD, BCD, ABCD) only."
-    
-    prompt = f"{instruction}\n\n{SECEVAL_FEW_SHOT_EXAMPLES}\nQuestion: {question}{ " ".join(choices)}\nAnswer:"
-
+    instruction = (
+        "Below are multiple-choice questions concerning cybersecurity. Please select the correct answers and respond "
+        "with the letters ABCD (A, B, C, D, AB, AC, AD, BC, BD, CD, ABC, ABD, ACD, BCD, ABCD) only."
+    )
+    choices_str = " ".join(choices)
+    prompt = f"{instruction}\n\n{SECEVAL_FEW_SHOT_EXAMPLES}\nQuestion: {question} {choices_str}\nAnswer:"
     doc_choices = [f" {letter}" for letter in SECEVAL_ENGLISH_LETTER_INDICES]
-
     if gold_letter not in SECEVAL_ENGLISH_LETTER_INDICES:
         logger.warning(f"[SecEvalMCQA] Skipping invalid answer: '{gold_letter}' for question: {question[:30]}...")
         return None
-
     gold_index = SECEVAL_ENGLISH_LETTER_INDICES.index(gold_letter)
-
     return Doc(
         task_name=task_name,
         query=prompt,
@@ -826,21 +1033,32 @@ def seceval_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Optional[D
 SECURE_TASKS = [
     CustomSECUREEvalTask(name="secure:maet", hf_subset="MAET"),
     CustomSECUREEvalTask(name="secure:cwet", hf_subset="CWET"),
+    CustomSECUREEvalTask(name="secure:kcv", hf_subset="KCV"),
+    CustomSECUREEvalTask(name="secure:vood", hf_subset="VOOD"),
     CustomSECUREEvalTask(name="secure:maet_em", hf_subset="MAET", log_prob=False),
     CustomSECUREEvalTask(name="secure:cwet_em", hf_subset="CWET", log_prob=False),
+    CustomSECUREEvalTask(name="secure:kcv_em", hf_subset="KCV", log_prob=False),
+    CustomSECUREEvalTask(name="secure:vood_em", hf_subset="VOOD", log_prob=False)
 ]
 
 # SECBENCH tasks
 SECBENCH_TASKS = [
     CustomSecBenchEvalTask(name="secbench:mcq-en", hf_subset="MCQs_English"),
     CustomSecBenchEvalTask(name="secbench:mcq-en_em", hf_subset="MCQs_English", log_prob=False),
+    CustomSecBenchEvalTask(name="secbench:mcq-cn", hf_subset="MCQs_Chinese"),
+    CustomSecBenchEvalTask(name="secbench:mcq-cn_em", hf_subset="MCQs_Chinese", log_prob=False),
 ]
 
 # CTI-Bench tasks
 CTIBENCH_TASKS = [
+    CustomCTIBenchEvalTask(name="cti_bench:cti-mcq_ori", hf_subset="cti-mcq"),
     CustomCTIBenchEvalTask(name="cti_bench:cti-mcq", hf_subset="cti-mcq"),
+    CustomCTIBenchEvalTask(name="cti_bench:cti-mcq_logprob", hf_subset="cti-mcq"),
+    CustomCTIBenchEvalTask(name="cti_bench:cti-rcm_ori", hf_subset="cti-rcm"),
     CustomCTIBenchEvalTask(name="cti_bench:cti-rcm", hf_subset="cti-rcm"),
+    CustomCTIBenchEvalTask(name="cti_bench:cti-vsp_ori", hf_subset="cti-vsp"),
     CustomCTIBenchEvalTask(name="cti_bench:cti-vsp", hf_subset="cti-vsp"),
+    CustomCTIBenchEvalTask(name="cti_bench:cti-ate_ori", hf_subset="cti-ate"),
     CustomCTIBenchEvalTask(name="cti_bench:cti-ate", hf_subset="cti-ate"),
 ]
 
@@ -850,10 +1068,14 @@ CYBERMETRICS_TASKS = [
     CustomCyberMetricEvalTask(name="cybermetrics:500", hf_subset="cyberMetric_500"),
     CustomCyberMetricEvalTask(name="cybermetrics:2000", hf_subset="cyberMetric_2000"),
     CustomCyberMetricEvalTask(name="cybermetrics:10000", hf_subset="cyberMetric_10000"),
+    CustomCyberMetricEvalTask(name="cybermetrics:80_em", hf_subset="cyberMetric_80", log_prob=False),
+    CustomCyberMetricEvalTask(name="cybermetrics:500_em", hf_subset="cyberMetric_500", log_prob=False),
+    CustomCyberMetricEvalTask(name="cybermetrics:2000_em", hf_subset="cyberMetric_2000", log_prob=False),
+    CustomCyberMetricEvalTask(name="cybermetrics:10000_em", hf_subset="cyberMetric_10000", log_prob=False),
 ]
 
 # SecEval tasks
 SECEVAL_TABLE = [SecEvalMCQATask()]
 
 # The table of tasks to be imported by lighteval
-TASKS_TABLE = CYBERSEC_TASKS + CTIBENCH_TASKS + CYBERMETRICS_TASKS + SECEVAL_TABLE + SECURE_TASKS
+TASKS_TABLE = CYBERSEC_TASKS + CTIBENCH_TASKS + CYBERMETRICS_TASKS + SECEVAL_TABLE + SECURE_TASKS + SECBENCH_TASKS
