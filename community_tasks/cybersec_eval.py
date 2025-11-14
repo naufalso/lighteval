@@ -76,6 +76,23 @@ CYBERSEC_SUBSETS = [
     "hackingarticles"
 ]
 
+REDSAGE_MCQ_SUBSETS = [
+    "cybersecurity_knowledge_generals",
+    "cybersecurity_knowledge_frameworks",
+    "cybersecurity_skills",
+    "cybersecurity_tools",
+    "cybersecurity_tools_cli",
+    "cybersecurity_tools_kali",
+]
+
+REDSAGE_MCQ_SUBSETS_5K =  [
+    "cybersecurity_knowledge_generals",
+    "cybersecurity_knowledge_frameworks",
+    "cybersecurity_skills",
+    "cybersecurity_tools_cli",
+    "cybersecurity_tools_kali",
+]
+
 CTIBENCH_SUBSETS = [
     "cti-mcq",
     "cti-rcm",
@@ -223,7 +240,7 @@ def cybersec_prompt_fn(line: Dict, task_name: Optional[str] = None, include_cont
             raise ValueError(f"Missing answer for choice {letter} in line: {line}")
         choices_str_parts.append(f"{letter}. {choice_text}")
 
-    instructions = "You are given multiple choice questions. Answer with the option letter from the given choices directly."
+    instructions = "You are given multiple choice questions. Answer with the option letter (A, B, C, D) from the given choices directly."
 
     # Construct the MMLU-style query
     full_query = instructions + "\n" + "\n\n".join(query_parts) + "\n" + "\n".join(choices_str_parts) + "\nAnswer:"
@@ -274,7 +291,7 @@ def secure_mcq_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
     for letter, choice_text in zip(ENGLISH_LETTER_INDICES, answers_list):
         choices_str_parts.append(f"{letter}. {choice_text}")
 
-    instructions = "You are given multiple choice questions. Answer with the option letter from the given choices directly."
+    instructions = "You are given multiple choice questions. Answer with the option letter (A, B, C, D) from the given choices directly."
 
     # Construct the MMLU-style query
     full_query = instructions + "\n" + "\n".join(query_parts) + "\n" + "\n".join(choices_str_parts) + "\nAnswer:"
@@ -378,59 +395,6 @@ def secbench_mcq_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
         gold_index=gold_index,
         specific={"id": line.get("id")},
         instruction=instructions,
-    )
-
-
-# ============ Task Configuration Classes ============
-
-class CustomCybersecEvalTask(LightevalTaskConfig):
-    """
-    Configuration for a single cybersecurity evaluation task subset.
-    """
-
-    def __init__(
-        self,
-        name: str,
-        hf_subset: str,
-        include_context: bool,
-    ):
-        super().__init__(
-            name=name,
-            hf_subset=hf_subset,
-            prompt_function=lambda line, task_name: cybersec_prompt_fn(line, task_name, include_context=include_context),
-            # IMPORTANT: Replace with your actual Hugging Face Hub dataset repository ID
-            # For example: "my_organization/my_cybersecurity_dataset"
-            hf_repo="naufalso/cybersecurity_benchmark_mcqa_cleaned",
-            metrics=[Metrics.loglikelihood_acc_norm],  # Using standard accuracy for multiple-choice questions
-            hf_avail_splits=["test"],  # As per your dataset card
-            evaluation_splits=["test"],  # As per your dataset card
-            few_shots_split=None,  # No few-shot examples specified
-            few_shots_select=None,  # No few-shot selection strategy
-            suite=["community"],  # Add this task to the community suite
-            generation_size=-1,  # For multiple-choice (loglikelihood) evaluations
-            stop_sequence=None,  # Not applicable for non-generative tasks
-            trust_dataset=True,  # Default, set to True if you trust the dataset source implicitly
-        )
-
-
-# Create a list of task configurations for all defined subsets
-CYBERSEC_TASKS = []
-for subset in CYBERSEC_SUBSETS:
-    # Version without context (default)
-    CYBERSEC_TASKS.append(
-        CustomCybersecEvalTask(
-            name=f"cybersec_eval:{subset}",
-            hf_subset=subset,
-            include_context=False,
-        )
-    )
-    # Version with context
-    CYBERSEC_TASKS.append(
-        CustomCybersecEvalTask(
-            name=f"cybersec_eval_ctx:{subset}",
-            hf_subset=subset,
-            include_context=True,
-        )
     )
 
 
@@ -544,7 +508,7 @@ def cti_ate_prompt_fn(line: Dict, task_name: Optional[str] = None, is_direct_ans
 
 # ============ Metric Functions ============
 
-def compute_cti_mcq_last_line_accuracy(model_response: ModelResponse, doc: Doc, **kwargs) -> float:
+def compute_mcq_last_line_accuracy(model_response: ModelResponse, doc: Doc, **kwargs) -> float:
     """
     Computes accuracy for CTI-MCQ task by extracting a single letter A-D from the model response.
     Extraction strategy:
@@ -593,6 +557,98 @@ def compute_cti_mcq_last_line_accuracy(model_response: ModelResponse, doc: Doc, 
 
     gold_answer = doc.choices[doc.gold_index].strip().upper()
     return float(answer.upper() == gold_answer)
+
+def compute_multi_mcq_last_line_accuracy(model_response: ModelResponse, doc: Doc, **kwargs) -> float:
+    """
+    Computes accuracy for multi-answer MCQ tasks by extracting letter combinations like A, AB, ABD, etc.
+    Extraction strategy:
+      1. Take last non-empty line, look for valid multi-letter combinations.
+      2. Fallback: scan previous lines.
+      3. Final fallback: extract all unique letters and form combination if valid.
+    """
+    if not model_response.text:
+        return 0.0
+    
+    text = model_response.text[0]
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    
+    # Pattern for multi-letter combinations (sorted order expected)
+    pattern_multi = re.compile(r'\b([ABCD]{1,4})\b')
+    pattern_leading = re.compile(r'^([ABCD]{1,4})[).:\s]')
+    pattern_spaced = re.compile(r'\b([ABCD](?:\s*,\s*[ABCD])*)\b')
+
+    def normalize_answer(answer: str) -> str:
+        """Normalize answer by removing spaces/commas and sorting letters."""
+        if not answer:
+            return ""
+        # Remove spaces, commas, and other separators
+        letters = re.findall(r'[ABCD]', answer.upper())
+        # Remove duplicates and sort
+        unique_letters = sorted(set(letters))
+        return ''.join(unique_letters)
+
+    def find_in_line(line: str) -> Optional[str]:
+        cleaned = line.replace('**', ' ').replace('*', ' ')
+        
+        # Try leading pattern first (most reliable)
+        m = pattern_leading.match(cleaned)
+        if m:
+            return normalize_answer(m.group(1))
+        
+        # Try spaced pattern (A, B, C format)
+        m = pattern_spaced.search(cleaned)
+        if m:
+            return normalize_answer(m.group(1))
+        
+        # Try multi-letter pattern
+        matches = pattern_multi.findall(cleaned)
+        if matches:
+            # Take the longest valid match
+            valid_matches = [m for m in matches if all(c in 'ABCD' for c in m)]
+            if valid_matches:
+                longest_match = max(valid_matches, key=len)
+                return normalize_answer(longest_match)
+        
+        # Trailing markdown emphasis like **ABC**
+        m = re.search(r'\*\*([ABCD]{1,4})\*\*$', cleaned)
+        if m:
+            return normalize_answer(m.group(1))
+        
+        # Check if line ends with valid letter combination
+        if cleaned and len(cleaned) >= 1:
+            # Extract trailing letters
+            trailing = re.search(r'([ABCD]{1,4})$', cleaned)
+            if trailing and (len(cleaned) == len(trailing.group(1)) or 
+                           not cleaned[-(len(trailing.group(1))+1)].isalnum()):
+                return normalize_answer(trailing.group(1))
+        
+        return None
+
+    answer = None
+    if lines:
+        # Prioritize last line then walk backwards a few lines
+        for line in lines[::-1][:5]:
+            answer = find_in_line(line)
+            if answer:
+                break
+    
+    # Fallback: extract all letters from text and check if they form a valid combination
+    if not answer:
+        letters = re.findall(r'[ABCD]', text)
+        if letters:
+            # Try to form a valid combination from unique letters
+            unique_letters = sorted(set(letters))
+            candidate = ''.join(unique_letters)
+            
+            # Only use if it appears to be intentional (not too many scattered letters)
+            if len(letters) <= 8 and len(candidate) <= 4:  # Reasonable limits
+                answer = candidate
+    
+    if not answer:
+        return 0.0
+
+    gold_answer = doc.choices[doc.gold_index].strip().upper()
+    return float(answer == gold_answer)
 
 def compute_cti_rcm_accuracy(model_response: ModelResponse, doc: Doc, **kwargs) -> float:
     """
@@ -722,7 +778,23 @@ cti_mcq_metrics = SampleLevelMetric(
     metric_name="acc",
     higher_is_better=True,
     category=SamplingMethod.GENERATIVE,
-    sample_level_fn=compute_cti_mcq_last_line_accuracy,
+    sample_level_fn=compute_mcq_last_line_accuracy,
+    corpus_level_fn=np.mean,
+)
+
+regex_mcq_metrics = SampleLevelMetric(
+    metric_name="acc",
+    higher_is_better=True,
+    category=SamplingMethod.GENERATIVE,
+    sample_level_fn=compute_mcq_last_line_accuracy,
+    corpus_level_fn=np.mean,
+)
+
+regex_multi_mcq_metrics = SampleLevelMetric(
+    metric_name="acc",
+    higher_is_better=True,
+    category=SamplingMethod.GENERATIVE,
+    sample_level_fn=compute_multi_mcq_last_line_accuracy,
     corpus_level_fn=np.mean,
 )
 
@@ -760,6 +832,8 @@ mitre_technique_metrics = SampleLevelMetric(
 
 # Extend the Metrics enum with custom metrics
 extend_enum(Metrics, "cti_mcq_acc", cti_mcq_metrics)
+extend_enum(Metrics, "regex_mcq_acc", regex_mcq_metrics)
+extend_enum(Metrics, "regex_multi_mcq_acc", regex_multi_mcq_metrics)
 extend_enum(Metrics, "cti_rcm_acc", cti_rcm_metrics)
 extend_enum(Metrics, "cti_vsp_mad_norm", cti_vsp_norm_metrics)
 extend_enum(Metrics, "cti_vsp_mad", cti_vsp_mad_metrics)
@@ -769,24 +843,64 @@ extend_enum(Metrics, "mitre_technique_micro_f1", mitre_technique_metrics)
 # ============ Task Configuration Classes ============
 
 class CustomCybersecEvalTask(LightevalTaskConfig):
-    """Configuration for a single cybersecurity evaluation task subset."""
+    """
+    Configuration for a single cybersecurity evaluation task subset.
+    """
 
-    def __init__(self, name: str, hf_subset: str, include_context: bool):
+    def __init__(
+        self,
+        name: str,
+        hf_subset: str,
+        include_context: bool,
+    ):
         super().__init__(
             name=name,
             hf_subset=hf_subset,
             prompt_function=lambda line, task_name: cybersec_prompt_fn(line, task_name, include_context=include_context),
+            # IMPORTANT: Replace with your actual Hugging Face Hub dataset repository ID
+            # For example: "my_organization/my_cybersecurity_dataset"
             hf_repo="naufalso/cybersecurity_benchmark_mcqa_cleaned",
-            metrics=[Metrics.loglikelihood_acc_norm],
-            hf_avail_splits=["test"],
-            evaluation_splits=["test"],
-            few_shots_split=None,
-            few_shots_select=None,
-            suite=["community"],
-            generation_size=-1,
-            stop_sequence=None,
-            trust_dataset=True,
+            metrics=[Metrics.loglikelihood_acc_norm],  # Using standard accuracy for multiple-choice questions
+            hf_avail_splits=["test"],  # As per your dataset card
+            evaluation_splits=["test"],  # As per your dataset card
+            few_shots_split=None,  # No few-shot examples specified
+            few_shots_select=None,  # No few-shot selection strategy
+            suite=["community"],  # Add this task to the community suite
+            generation_size=-1,  # For multiple-choice (loglikelihood) evaluations
+            stop_sequence=None,  # Not applicable for non-generative tasks
+            trust_dataset=True,  # Default, set to True if you trust the dataset source implicitly
         )
+
+class CustomRedSageMCQTask(LightevalTaskConfig):
+    """
+    Configuration for a single cybersecurity evaluation task subset.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        hf_subset: str,
+        include_context: bool= False,
+        evaluation_split: str = "test_10k"
+    ):
+        super().__init__(
+            name=name,
+            hf_subset=hf_subset,
+            prompt_function=lambda line, task_name: cybersec_prompt_fn(line, task_name, include_context=include_context),
+            # IMPORTANT: Replace with your actual Hugging Face Hub dataset repository ID
+            # For example: "my_organization/my_cybersecurity_dataset"
+            hf_repo="naufalso/RedSage_MCQ_Qwen_Verified",
+            metrics=[Metrics.loglikelihood_acc_norm] if "_em" not in name else [Metrics.exact_match, Metrics.quasi_exact_match, Metrics.prefix_exact_match, Metrics.prefix_quasi_exact_match, regex_mcq_metrics],  # Using standard accuracy for multiple-choice questions
+            hf_avail_splits=["test", "val", "test_10k", "test_5k", "test_1k"],  # As per your dataset card
+            evaluation_splits=[evaluation_split],  # As per your dataset card
+            few_shots_split="val",  # Use validation split for few-shot examples
+            few_shots_select="sequential",  # Sequential selection strategy
+            suite=["community"],  # Add this task to the community suite
+            generation_size=-1 if "_em" not in name else 100,  # For multiple-choice (loglikelihood) evaluations
+            stop_sequence=None if "_em" not in name else ["\n"],  # Not applicable for non-generative tasks
+            trust_dataset=True,  # Default, set to True if you trust the dataset source implicitly
+        )
+
 class CustomCTIBenchEvalTask(LightevalTaskConfig):
     """Configuration for CTI-Bench evaluation tasks."""
 
@@ -794,14 +908,14 @@ class CustomCTIBenchEvalTask(LightevalTaskConfig):
         if name == "cti_bench:cti-mcq_ori":
             prompt_fn = partial(ctimcq_prompt_fn, is_direct_answer=False)
             metrics = [cti_mcq_metrics]
-            generation_size = 2048
+            generation_size = 1024
             stop_sequence = []
-        elif name == "cti_bench:cti-mcq":
+        elif name == "cti_bench:cti-mcq_em":
             prompt_fn = ctimcq_prompt_fn
             metrics = [cti_mcq_metrics]
             generation_size = 100
             stop_sequence = ["\n"]
-        elif name == "cti_bench:cti-mcq_logprob":
+        elif name == "cti_bench:cti-mcq":
             prompt_fn = ctimcq_prompt_fn
             metrics = [Metrics.loglikelihood_acc_norm]
             generation_size = -1
@@ -809,7 +923,7 @@ class CustomCTIBenchEvalTask(LightevalTaskConfig):
         elif name == "cti_bench:cti-rcm_ori":
             prompt_fn = partial(cti_rcm_prompt_fn, is_direct_answer=False)
             metrics = [cti_rcm_metrics]
-            generation_size = 2048
+            generation_size = 512
             stop_sequence = []
         elif name == "cti_bench:cti-rcm":
             prompt_fn = cti_rcm_prompt_fn
@@ -824,7 +938,7 @@ class CustomCTIBenchEvalTask(LightevalTaskConfig):
                 raise ImportError("CVSS library is required for CTI-VSP evaluation.")
             prompt_fn = partial(cti_vsp_prompt_fn, is_direct_answer=False)
             metrics = [cti_vsp_norm_metrics, cti_vsp_mad_metrics]
-            generation_size = 2048
+            generation_size = 512
             stop_sequence = []
         elif name == "cti_bench:cti-vsp":
             try:
@@ -839,7 +953,7 @@ class CustomCTIBenchEvalTask(LightevalTaskConfig):
         elif name == "cti_bench:cti-ate_ori":
             prompt_fn = partial(cti_ate_prompt_fn, is_direct_answer=False)
             metrics = [mitre_technique_metrics]
-            generation_size = 2048
+            generation_size = 512
             stop_sequence = []
         elif name == "cti_bench:cti-ate":
             prompt_fn = cti_ate_prompt_fn
@@ -877,6 +991,9 @@ class CustomCyberMetricEvalTask(LightevalTaskConfig):
             metrics = [
                 Metrics.exact_match,
                 Metrics.quasi_exact_match,
+                Metrics.prefix_exact_match,
+                Metrics.prefix_quasi_exact_match,
+                regex_mcq_metrics
             ]
             generation_size = 100
             stop_sequence = ["\n"]
@@ -904,6 +1021,7 @@ class CustomSECUREEvalTask(LightevalTaskConfig):
 
         if hf_subset in ["MAET", "CWET"]:
             prompt_fn = secure_mcq_prompt_fn
+
         elif hf_subset in ["KCV", "VOOD"]:
             prompt_fn = secure_bool_prompt_fn
         else:
@@ -914,10 +1032,12 @@ class CustomSECUREEvalTask(LightevalTaskConfig):
             hf_subset=hf_subset,
             prompt_function=prompt_fn,
             hf_repo="RISys-Lab/SECURE_Benchmark",
-            metrics=[Metrics.loglikelihood_acc_norm] if log_prob else [
+            metrics=[Metrics.loglikelihood_acc_norm] if log_prob else ([
                 Metrics.exact_match,
                 Metrics.quasi_exact_match,
-            ],
+                Metrics.prefix_exact_match,
+                Metrics.prefix_quasi_exact_match,
+            ] + ([regex_mcq_metrics] if hf_subset in ["MAET", "CWET"] else [])),
             hf_avail_splits=["val", "test"],
             evaluation_splits=["test"],
             few_shots_split="val",
@@ -929,7 +1049,7 @@ class CustomSECUREEvalTask(LightevalTaskConfig):
         )
 
 class CustomSecBenchEvalTask(LightevalTaskConfig):
-    """Configuration for SECURE evaluation tasks."""
+    """Configuration for SecBench evaluation tasks."""
 
     def __init__(self, name: str, hf_subset: str, log_prob: bool = True):
         super().__init__(
@@ -940,6 +1060,9 @@ class CustomSecBenchEvalTask(LightevalTaskConfig):
             metrics=[Metrics.loglikelihood_acc_norm] if log_prob else [
                 Metrics.exact_match,
                 Metrics.quasi_exact_match,
+                Metrics.prefix_exact_match,
+                Metrics.prefix_quasi_exact_match,
+                regex_mcq_metrics
             ],
             hf_avail_splits=["val", "test"],
             evaluation_splits=["test"],
@@ -979,40 +1102,65 @@ def cybermetrics_mcq_prompt_fn(line: Dict, task_name: Optional[str] = None) -> D
         gold_index=gold_index,
     )
 
+def mmlu_cssec_mcq_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Doc:
+    query = f"The following are multiple choice questions (with answers) about computer security. Choose the correct answer (A, B, C, or D) only.\n\n"
+    query += line["question"] + "\n"
+    query += "".join([f"{key}. {choice}\n" for key, choice in zip(ENGLISH_LETTER_INDICES, line["choices"])])
+    query += "Answer:"
+
+    gold_ix = ENGLISH_LETTER_INDICES.index(line["answer"]) if isinstance(line["answer"], str) else line["answer"]
+    is_few_shots = line.get("__few_shots", False)  # We are adding few shots
+
+    return Doc(
+        task_name=task_name,
+        query=query,
+        choices=[" A", " B", " C", " D"] if is_few_shots else ["A", "B", "C", "D"],
+        gold_index=gold_ix,
+        instruction=f"The following are multiple choice questions (with answers) about computer security. Choose the correct answer (A, B, C, or D) only.\n\n",
+    )
 
 class SecEvalMCQATask(LightevalTaskConfig):
     """Configuration for SecEval MCQA task."""
-    
-    def __init__(self):
+
+    def __init__(self, name: str = "seceval:mcqa"):
+        
+        if name == "seceval:mcqa":
+            prompt_fn = seceval_prompt_fn
+        elif name == "seceval:mcqa_0s":
+            prompt_fn = partial(seceval_prompt_fn, is_few_shot=False)
+
         super().__init__(
-            name="seceval:mcqa",
+            name=name,
             hf_subset="default",
-            prompt_function=seceval_prompt_fn,
+            prompt_function=prompt_fn,
             hf_repo="RISys-Lab/seceval",
-            metrics=[Metrics.exact_match,Metrics.quasi_exact_match],  # Fixed: was 'metric'
+            metrics=[Metrics.exact_match, Metrics.quasi_exact_match, Metrics.prefix_exact_match, Metrics.prefix_quasi_exact_match, regex_multi_mcq_metrics],  # Fixed: was 'metric'
             hf_avail_splits=["train"],
             evaluation_splits=["train"],
             few_shots_split=None,
             few_shots_select=None,
             suite=["community"],
-            generation_size=2048,
+            generation_size=512,
             stop_sequence=["\n"],
             trust_dataset=True,
         )
 
 
-def seceval_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Optional[Doc]:
+def seceval_prompt_fn(line: Dict, task_name: Optional[str] = None, is_few_shot: bool = True) -> Optional[Doc]:
     """Create prompt for SecEval MCQA task (multi-answer)."""
     validate_mcq_line(line, ["question", "answer", "choices"])
     question = line["question"]
     choices = line["choices"]
     gold_letter = line["answer"].strip().upper()
     instruction = (
-        "Below are multiple-choice questions concerning cybersecurity. Please select the correct answers and respond "
-        "with the letters ABCD (A, B, C, D, AB, AC, AD, BC, BD, CD, ABC, ABD, ACD, BCD, ABCD) only."
+        "Below are multiple-choice questions concerning cybersecurity. Please select the correct answers and strictly respond "
+        "with the letters ABCD (A, B, C, D, AB, AC, AD, BC, BD, CD, ABC, ABD, ACD, BCD, ABCD) only. Do not include any explanations."
     )
     choices_str = " ".join(choices)
-    prompt = f"{instruction}\n\n{SECEVAL_FEW_SHOT_EXAMPLES}\nQuestion: {question} {choices_str}\nAnswer:"
+    if is_few_shot:
+        prompt = f"{instruction}\n\n{SECEVAL_FEW_SHOT_EXAMPLES}\nQuestion: {question} {choices_str}\nAnswer:"
+    else:
+        prompt = f"{instruction}\n\nQuestion: {question} {choices_str}\nAnswer:"
     doc_choices = [f" {letter}" for letter in SECEVAL_ENGLISH_LETTER_INDICES]
     if gold_letter not in SECEVAL_ENGLISH_LETTER_INDICES:
         logger.warning(f"[SecEvalMCQA] Skipping invalid answer: '{gold_letter}' for question: {question[:30]}...")
@@ -1023,11 +1171,108 @@ def seceval_prompt_fn(line: Dict, task_name: Optional[str] = None) -> Optional[D
         query=prompt,
         choices=doc_choices,
         gold_index=gold_index,
+        instruction=instruction,
         specific={"id": line.get("id"), "topic": line.get("topics")},
     )
 
+mmlu_computer_security_community = LightevalTaskConfig(
+    name="mmlu:computer_security",
+    suite=["community"],
+    prompt_function=mmlu_cssec_mcq_prompt_fn,
+    hf_repo="lighteval/mmlu",
+    hf_subset="computer_security",
+    hf_avail_splits=["auxiliary_train", "test", "validation", "dev"],
+    evaluation_splits=["test"],
+    few_shots_split="dev",
+    few_shots_select="sequential",
+    generation_size=1,
+    metrics=[Metrics.loglikelihood_acc],
+    stop_sequence=["\n"],
+    trust_dataset=True,
+    version=0,
+)
+
 
 # ============ Task Instances ============
+
+# Create a list of task configurations for all defined subsets
+CYBERSEC_TASKS = []
+for subset in CYBERSEC_SUBSETS:
+    # Version without context (default)
+    CYBERSEC_TASKS.append(
+        CustomCybersecEvalTask(
+            name=f"cybersec_eval:{subset}",
+            hf_subset=subset,
+            include_context=False,
+        )
+    )
+    # Version with context
+    CYBERSEC_TASKS.append(
+        CustomCybersecEvalTask(
+            name=f"cybersec_eval_ctx:{subset}",
+            hf_subset=subset,
+            include_context=True,
+        )
+    )
+
+REDSAGE_MCQ_TASKS = []
+for subset in REDSAGE_MCQ_SUBSETS:
+    # Version without context (default)
+    REDSAGE_MCQ_TASKS.append(
+        CustomRedSageMCQTask(
+            name=f"redsage_mcq:{subset}",
+            hf_subset=subset,
+            include_context=False,
+        )
+    )
+    # Version with context
+    REDSAGE_MCQ_TASKS.append(
+        CustomRedSageMCQTask(
+            name=f"redsage_mcq_ctx:{subset}",
+            hf_subset=subset,
+            include_context=True,
+        )
+    )
+    # Version exact match (no context)
+    REDSAGE_MCQ_TASKS.append(
+        CustomRedSageMCQTask(
+            name=f"redsage_mcq_em:{subset}",
+            hf_subset=subset,
+            include_context=False,
+        )
+    )
+
+for subset in REDSAGE_MCQ_SUBSETS_5K:
+    # Version without context (default)
+    REDSAGE_MCQ_TASKS.append(
+        CustomRedSageMCQTask(
+            name=f"redsage_mcq_5k:{subset}",
+            hf_subset=subset,
+            include_context=False,
+            evaluation_split="test_5k"
+        )
+    )
+    # Version with context
+    REDSAGE_MCQ_TASKS.append(
+        CustomRedSageMCQTask(
+            name=f"redsage_mcq_5k_ctx:{subset}",
+            hf_subset=subset,
+            include_context=True,
+            evaluation_split="test_5k"
+        )
+    )
+
+    # Version exact match (no context)
+    REDSAGE_MCQ_TASKS.append(
+        CustomRedSageMCQTask(
+            name=f"redsage_mcq_5k_em:{subset}",
+            hf_subset=subset,
+            include_context=False,
+            evaluation_split="test_5k"
+        )
+    )
+
+
 
 # SECURE tasks
 SECURE_TASKS = [
@@ -1052,8 +1297,8 @@ SECBENCH_TASKS = [
 # CTI-Bench tasks
 CTIBENCH_TASKS = [
     CustomCTIBenchEvalTask(name="cti_bench:cti-mcq_ori", hf_subset="cti-mcq"),
+    CustomCTIBenchEvalTask(name="cti_bench:cti-mcq_em", hf_subset="cti-mcq"),
     CustomCTIBenchEvalTask(name="cti_bench:cti-mcq", hf_subset="cti-mcq"),
-    CustomCTIBenchEvalTask(name="cti_bench:cti-mcq_logprob", hf_subset="cti-mcq"),
     CustomCTIBenchEvalTask(name="cti_bench:cti-rcm_ori", hf_subset="cti-rcm"),
     CustomCTIBenchEvalTask(name="cti_bench:cti-rcm", hf_subset="cti-rcm"),
     CustomCTIBenchEvalTask(name="cti_bench:cti-vsp_ori", hf_subset="cti-vsp"),
@@ -1075,7 +1320,7 @@ CYBERMETRICS_TASKS = [
 ]
 
 # SecEval tasks
-SECEVAL_TABLE = [SecEvalMCQATask()]
+SECEVAL_TABLE = [SecEvalMCQATask(), SecEvalMCQATask(name="seceval:mcqa_0s")]
 
 # The table of tasks to be imported by lighteval
-TASKS_TABLE = CYBERSEC_TASKS + CTIBENCH_TASKS + CYBERMETRICS_TASKS + SECEVAL_TABLE + SECURE_TASKS + SECBENCH_TASKS
+TASKS_TABLE = CYBERSEC_TASKS + REDSAGE_MCQ_TASKS + CTIBENCH_TASKS + CYBERMETRICS_TASKS + SECEVAL_TABLE + SECURE_TASKS + SECBENCH_TASKS + [mmlu_computer_security_community]
