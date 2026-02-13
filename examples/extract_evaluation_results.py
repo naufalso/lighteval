@@ -5,8 +5,12 @@ This script extracts evaluation results from lighteval JSON output files and com
 It supports multiple metrics beyond just 'acc_norm', including accuracy, f1_score, rouge, bleu, and many others.
 
 Key Features:
-- Auto-detects available metrics in JSON files
-- Supports multiple metrics per task (not just acc_norm)
+- Auto-detects available metrics in JSON fi            writer.writerow(filtered_row)
+            
+    print(f"Combined results saved to {args.output}")
+    print(f"Found {len(sorted_metrics)} unique metrics: {', '.join(sorted_metrics)}")
+    print(f"Found {len(sorted_eval_keys)} unique tasks: {', '.join(sorted_eval_keys)}")
+    print(f"Output CSV contains {len(filtered_fieldnames)} columns (empty columns removed)") Supports multiple metrics per task (not just acc_norm)
 - Calculates macro scores using the primary metric
 - Supports filtering by folder names
 - Can include or exclude standard error metrics
@@ -83,7 +87,7 @@ def extract_results(file_path, primary_metric=None, include_stderr=False):
 
         # Create a cleaner task name
         try:
-            clean_task_name = task_key.split(":")[1].split("|")[0]
+            clean_task_name = task_key.split("|")[1] #.split("|")[0]
         except IndexError:
             clean_task_name = task_key
 
@@ -267,32 +271,51 @@ if __name__ == "__main__":
     
     fieldnames = basic_columns + task_metric_columns
 
+    # First pass: collect all rows to identify non-empty columns
+    rows_data = []
+    columns_with_data = set(basic_columns)  # Always keep basic columns
+    
+    for result in all_results:
+        row = {
+            'file_name': result.get('file_name'),
+            'model_name': result.get('model_name'),
+        }
+        
+        # Add macro score if not metrics-only mode
+        if not args.metrics_only:
+            primary_metric = result.get('primary_metric', 'score')
+            macro_column = f'macro_{primary_metric}'
+            macro_value = result.get(macro_column)
+            row[macro_column] = macro_value
+            if macro_value is not None and macro_value != '':
+                columns_with_data.add(macro_column)
+        
+        # Add task-specific metrics
+        eval_results = result.get("evaluation_results", {})
+        for task_name, task_metrics in eval_results.items():
+            if isinstance(task_metrics, dict):
+                for metric_name, metric_value in task_metrics.items():
+                    column_name = f"{task_name}_{metric_name}"
+                    if column_name in fieldnames:
+                        row[column_name] = metric_value
+                        # Track columns that have actual data
+                        if metric_value is not None and metric_value != '':
+                            columns_with_data.add(column_name)
+            
+        rows_data.append(row)
+    
+    # Filter fieldnames to only include columns with data
+    filtered_fieldnames = [col for col in fieldnames if col in columns_with_data]
+    
+    # Write CSV with only non-empty columns
     with open(args.output, 'w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=filtered_fieldnames)
         writer.writeheader()
         
-        for result in all_results:
-            row = {
-                'file_name': result.get('file_name'),
-                'model_name': result.get('model_name'),
-            }
-            
-            # Add macro score if not metrics-only mode
-            if not args.metrics_only:
-                primary_metric = result.get('primary_metric', 'score')
-                macro_column = f'macro_{primary_metric}'
-                row[macro_column] = result.get(macro_column)
-            
-            # Add task-specific metrics
-            eval_results = result.get("evaluation_results", {})
-            for task_name, task_metrics in eval_results.items():
-                if isinstance(task_metrics, dict):
-                    for metric_name, metric_value in task_metrics.items():
-                        column_name = f"{task_name}_{metric_name}"
-                        if column_name in fieldnames:
-                            row[column_name] = metric_value
-                
-            writer.writerow(row)
+        for row in rows_data:
+            # Filter row to only include columns that will be in the output
+            filtered_row = {col: row.get(col) for col in filtered_fieldnames}
+            writer.writerow(filtered_row)
             
     print(f"Combined results saved to {args.output}")
     print(f"Found {len(sorted_metrics)} unique metrics: {', '.join(sorted_metrics)}")

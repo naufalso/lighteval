@@ -1,0 +1,9 @@
+community|cybermetrics:80|5|0
+community|cybermetrics:500|5|0
+community|cybermetrics:2000|5|0
+community|cybermetrics:10000|5|0
+community|cti_bench:cti-mcq|5|0
+community|cti_bench:cti-rcm|5|0
+community|cti_bench:cti-vsp|5|0
+community|cti_bench:cti-ate|5|0
+community|seceval:mcqa|0|0

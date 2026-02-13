@@ -1,0 +1,3 @@
+community|mmlu:computer_security|0|0
+community|seceval:mcqa|0|0
+community|seceval:mcqa_0s|0|0

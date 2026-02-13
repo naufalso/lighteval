@@ -1,0 +1,2 @@
+community|secbench:mcq-en_em|5|0
+community|secbench:mcq-cn_em|5|0

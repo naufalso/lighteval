@@ -15,7 +15,7 @@ def download_dataset(dataset_name: str, dataset_subset: str, split: str = 'test'
     Returns:
         Dataset: The downloaded dataset.
     """
-    return load_dataset(dataset_name, dataset_subset, split=split)
+    return load_dataset(dataset_name, dataset_subset, split=split, download_mode="force_redownload")
 
 class DatasetDownloader:
     def __init__(self, dataset_name, dataset_subsets, split='test'):

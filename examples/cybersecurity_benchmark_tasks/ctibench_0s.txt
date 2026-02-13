@@ -1,0 +1,5 @@
+community|cti_bench:cti-mcq|0|0
+community|cti_bench:cti-mcq-ori|0|0
+community|cti_bench:cti-rcm|0|0
+community|cti_bench:cti-vsp|0|0
+community|cti_bench:cti-ate|0|0

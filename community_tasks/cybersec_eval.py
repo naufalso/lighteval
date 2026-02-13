@@ -439,12 +439,12 @@ def cti_rcm_prompt_fn(line: Dict, task_name: Optional[str] = None, is_direct_ans
     validate_mcq_line(line, ["Description", "Prompt", "GT"])
     
     instruction = "Analyze the following CVE description and map it to the appropriate CWE."
-    prompt = line['Prompt']
+    instruction_new = "Analyze the following CVE description and map it to the appropriate CWE. Answer the CWE ID in the format CWE-XXXX."
+    prompt = line['Prompt'].replace(instruction, instruction_new)
 
     if is_direct_answer:
         cve_description = line["Description"]
-        prompt = f"{instruction}\n\nCVE Description: {cve_description} The CWE is"
-
+        prompt = f"{instruction_new}\n\nCVE Description: {cve_description} The CWE is"
     solution = line['GT']
 
     return Doc(

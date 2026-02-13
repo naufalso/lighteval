@@ -1,0 +1,5 @@
+community|cti_bench:cti-vsp|5|0
+community|cti_bench:cti-ate|5|0
+community|cti_bench:cti-vsp_ori|5|0
+community|cti_bench:cti-ate_ori|5|0
+community|secure:vood_em|5|0

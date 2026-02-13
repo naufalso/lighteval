@@ -1,0 +1,5 @@
+community|redsage_mcq_5k_em:cybersecurity_knowledge_frameworks|0|0
+community|redsage_mcq_5k_em:cybersecurity_knowledge_generals|0|0
+community|redsage_mcq_em:cybersecurity_skills|0|0
+community|redsage_mcq_5k_em:cybersecurity_tools_cli|0|0
+community|redsage_mcq_5k_em:cybersecurity_tools_kali|0|0

@@ -1,0 +1,13 @@
+community|cti_bench:cti-mcq|5|0
+community|cti_bench:cti-rcm|5|0
+community|cti_bench:cti-vsp|5|0
+community|cti_bench:cti-ate|5|0
+leaderboard|mmlu:computer_security|5|0
+community|cybermetrics:500|5|0
+community|secbench:mcq-en|5|0
+community|secbench:mcq-cn|5|0
+community|secure:maet|5|0
+community|secure:cwet|5|0
+community|secure:kcv_em|5|0
+community|secure:vood_em|5|0
+community|seceval:mcqa|0|0

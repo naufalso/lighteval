@@ -1,0 +1,4 @@
+community|secure:maet_em|0|0
+community|secure:cwet_em|0|0
+community|secure:maet_em|5|0
+community|secure:cwet_em|5|0

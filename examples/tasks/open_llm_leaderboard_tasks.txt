@@ -66,3 +66,5 @@ leaderboard|mmlu:world_religions|5|0
 leaderboard|winogrande|5|0
 # GSM8K
 leaderboard|gsm8k|5|0
+# IFEval
+extended|ifeval|0|0
